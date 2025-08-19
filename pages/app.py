@@ -7,6 +7,7 @@ import streamlit as st
 from datetime import datetime
 from standardbots import StandardBotsRobot
 
+# --- Page setup ---
 st.set_page_config(page_title="RO1 Live (Standard Bots SDK)", layout="wide")
 
 # --- Sidebar inputs ---
@@ -18,16 +19,19 @@ vars_csv = st.sidebar.text_input("Variables (comma-separated)", "speed_rpm,load_
 refresh = st.sidebar.slider("Refresh interval (s)", 0.5, 5.0, 1.0, 0.5)
 run     = st.sidebar.toggle("Start streaming", value=False)
 
+# --- Layout placeholders ---
 st.title("RO1 Live via Standard Bots SDK")
 status_ph = st.empty()
 k1, k2, k3, k4 = st.columns(4)
 table_ph = st.empty()
 chart_ph = st.empty()
 
+# --- Cache robot instance ---
 @st.cache_resource(show_spinner=False)
 def get_robot(u, t):
     return StandardBotsRobot(url=u, token=t, robot_kind=StandardBotsRobot.RobotKind.Live)
 
+# --- Session state for history ---
 if "hist" not in st.session_state:
     st.session_state.hist = pd.DataFrame(columns=["ts"])
 
@@ -37,20 +41,7 @@ def append_hist(sample: dict):
     if len(st.session_state.hist) > 300:
         st.session_state.hist = st.session_state.hist.tail(300).reset_index(drop=True)
 
-def read_by_name(vc, name: str):
-    """Read a variable *by name* using vc.load() since no direct getter exists."""
-    items = vc.load() or []
-    match = next((v for v in items if v.get("name") == name), None)
-    return match.get("value") if match else None
-
-def write_by_name(vc, name: str, value):
-    """Write a variable by name using vc.update(id=..., value=...)."""
-    items = vc.load() or []
-    match = next((v for v in items if v.get("name") == name), None)
-    if not match:
-        raise ValueError(f"Variable '{name}' not found")
-    return vc.update(id=match["id"], value=value)
-
+# --- Main logic ---
 if run:
     if not url or not token:
         status_ph.error("Enter URL and API token, then toggle Start.")
@@ -58,54 +49,52 @@ if run:
 
     robot = get_robot(url, token)
     names = [v.strip() for v in vars_csv.split(",") if v.strip()]
+    sample = {}
 
-    while run:
-        sample = {}
-        try:
-            with robot.connection():
-                # Optional: also surface basic status
-                s = robot.status
-                status_ph.success(
-                    f"Connected · Mode={getattr(s.control, 'mode', None)} · "
-                    f"EStop={getattr(s.control, 'estop', None)}"
-                )
+    try:
+        with robot.connection():
+            # Basic status
+            s = robot.status
+            status_ph.success(
+                f"Connected · Mode={getattr(s.control, 'mode', None)} · "
+                f"EStop={getattr(s.control, 'estop', None)}"
+            )
 
-                vc = robot.routine_editor.variables
+            vc = robot.live.variables
 
-                # Read each variable via load()+filter
-                for n in names:
-                    try:
-                        sample[n] = read_by_name(vc, n)
-                    except Exception:
-                        sample[n] = None
+            # Read each requested variable
+            for n in names:
+                try:
+                    sample[n] = vc.get(n)
+                except Exception:
+                    sample[n] = None
 
-                # (Optional) Example write control in UI:
-                # if st.button("Set speed_rpm to 1200"):
-                #     write_by_name(vc, "speed_rpm", 1200)
+    except Exception as e:
+        status_ph.error(f"SDK error: {e}")
+        time.sleep(min(2.0, refresh))
+        st.rerun()
 
-        except Exception as e:
-            status_ph.error(f"SDK error: {e}")
-            time.sleep(min(2.0, refresh))
-            run = st.session_state.get("Start streaming", False)
-            continue
+    # KPIs (first four)
+    for col, label in zip([k1, k2, k3, k4], names[:4]):
+        val = sample.get(label)
+        col.metric(label, "-" if val is None else str(val))
 
-        # KPIs (first four)
-        for col, label in zip([k1, k2, k3, k4], names[:4]):
-            val = sample.get(label)
-            col.metric(label, "-" if val is None else str(val))
+    # Table of all requested variables
+    table_ph.dataframe(pd.DataFrame.from_dict(sample, orient="index", columns=["value"]))
 
-        # Table of all requested variables
-        table_ph.dataframe(pd.DataFrame.from_dict(sample, orient="index", columns=["value"]))
+    # Chart numeric variables over time
+    append_hist(sample)
+    df = st.session_state.hist.set_index("ts")
+    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    if num_cols:
+        chart_ph.line_chart(df[num_cols])
 
-        # Chart numeric variables over time
-        append_hist(sample)
-        df = st.session_state.hist.set_index("ts")
-        num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-        if num_cols:
-            chart_ph.line_chart(df[num_cols])
+    # --- Auto-refresh ---
+    time.sleep(refresh)
+    st.rerun()
 
-        time.sleep(refresh)
-        run = st.session_state.get("Start streaming", False)
 else:
-    status_ph.info("Fill URL/token, list your variable names, then toggle Start. "
-                   "This uses the SDK via your *.sb.app workspace (no LAN REST/Modbus needed).")
+    status_ph.info(
+        "Fill URL/token, list your variable names, then toggle Start. "
+        "This uses the SDK via your *.sb.app workspace (no LAN REST/Modbus needed)."
+    )
