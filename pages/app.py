@@ -60,7 +60,7 @@ if run:
                 f"EStop={getattr(s.control, 'estop', None)}"
             )
 
-            vc = robot.live.variables
+            vc = robot.variables
 
             # Read each requested variable
             for n in names:
