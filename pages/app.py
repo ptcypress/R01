@@ -44,7 +44,13 @@ def append_hist(sample: dict):
 # --- Helper for variable reads ---
 def read_by_name(vc, name: str):
     try:
-        return vc.load(name)   # direct lookup by variable name
+        resp = vc.load(name)   # query variable by name
+        if isinstance(resp, dict):
+            return resp.get("value")
+        elif hasattr(resp, "value"):
+            return resp.value
+        else:
+            return resp
     except Exception:
         return None
 
