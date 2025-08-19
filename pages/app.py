@@ -41,6 +41,13 @@ def append_hist(sample: dict):
     if len(st.session_state.hist) > 300:
         st.session_state.hist = st.session_state.hist.tail(300).reset_index(drop=True)
 
+# --- Helper for variable reads ---
+def read_by_name(vc, name: str):
+    try:
+        return vc.load(name)   # direct lookup by variable name
+    except Exception:
+        return None
+
 # --- Main logic ---
 if run:
     if not url or not token:
@@ -61,14 +68,10 @@ if run:
             )
 
             vc = robot.routine_editor.variables
-            items = vc.load()
 
             # Read each requested variable
             for n in names:
-                try:
-                    sample[n] = vc.get(n)
-                except Exception:
-                    sample[n] = None
+                sample[n] = read_by_name(vc, n)
 
     except Exception as e:
         status_ph.error(f"SDK error: {e}")
