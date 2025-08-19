@@ -6,3 +6,4 @@ matplotlib
 ace_tools
 scikit-learn
 seaborn
+pymodbus
