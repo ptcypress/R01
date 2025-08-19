@@ -44,13 +44,23 @@ def append_hist(sample: dict):
 # --- Helper for variable reads ---
 def read_by_name(vc, name: str):
     try:
-        resp = vc.load(name)   # query variable by name
+        resp = vc.load(name)
+
+        # Dict response
         if isinstance(resp, dict):
-            return resp.get("value")
-        elif hasattr(resp, "value"):
+            return resp.get("value") or resp.get("data") or resp
+
+        # SDK object with common attributes
+        if hasattr(resp, "value"):
             return resp.value
-        else:
-            return resp
+        if hasattr(resp, "data"):
+            return resp.data
+        if hasattr(resp, "__dict__"):
+            d = resp.__dict__
+            return d.get("value") or d.get("data") or str(d)
+
+        # Fallback to string
+        return str(resp)
     except Exception:
         return None
 
@@ -89,8 +99,10 @@ if run:
         val = sample.get(label)
         col.metric(label, "-" if val is None else str(val))
 
-    # Table of all requested variables
-    table_ph.dataframe(pd.DataFrame.from_dict(sample, orient="index", columns=["value"]))
+    # Table of all requested variables (stable, avoids flicker)
+    df_vars = pd.DataFrame([sample]).T
+    df_vars.columns = ["value"]
+    table_ph.dataframe(df_vars)
 
     # Chart numeric variables over time
     append_hist(sample)
