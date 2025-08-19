@@ -1,6 +1,6 @@
 import time, requests, pandas as pd, streamlit as st
 
-ROBOT = "http://10.17.2.107:3000"
+ROBOT = "https://10.17.2.107:3000"
 TOKEN = st.secrets.get("ro1_token", "l3a5ymfq-mq7vijtf-61phhms3-sbqpe")
 VAR_ID = st.text_input("Variable ID", "speed_rpm")  # or a GUID if required by your API
 
