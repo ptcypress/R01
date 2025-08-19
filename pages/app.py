@@ -1,31 +1,23 @@
-import time
-import streamlit as st
-from pymodbus.client import ModbusTcpClient
+import time, requests, pandas as pd, streamlit as st
 
-st.set_page_config(page_title="RO1 Live Modbus", layout="wide")
+ROBOT = "http://10.17.2.107:3000"
+TOKEN = st.secrets.get("ro1_token", "l3a5ymfq-mq7vijtf-61phhms3-sbqpe")
+VAR_ID = st.text_input("Variable ID", "speed_rpm")  # or a GUID if required by your API
 
-IP = st.text_input("Server IP", "10.2.17.107")
-PORT = st.number_input("Port", 1, 65535, 502)
-ADDR = st.number_input("Holding register offset (e.g., HR1=0)", 0, 9999, 0)
-NREG = st.number_input("Count", 1, 10, 1)
+headers = {"Authorization": f"Bearer {TOKEN}"}
+st.title("RO1 Live via REST")
+chart_ph = st.empty()
+vals = []
 
-@st.cache_resource
-def get_client(ip, port):
-    c = ModbusTcpClient(ip, port=port, timeout=2)
-    c.connect()
-    return c
-
-client = get_client(IP, PORT)
-placeholder = st.empty()
-run = st.checkbox("Live refresh (1 Hz)", value=True)
-
-hist = []
-
-while run:
-    rr = client.read_holding_registers(address=ADDR, count=NREG)
-    if not rr.isError():
-        vals = rr.registers
-    else:
-        st.error(f"Read error: {rr}")
+while True:
+    try:
+        r = requests.get(f"{ROBOT}/api/v1/routine-editor/variables/{VAR_ID}",
+                         headers=headers, timeout=3)
+        r.raise_for_status()
+        value = r.json().get("value")   # adjust to the field name in the response
+        vals.append({"t": pd.Timestamp.utcnow(), "value": value})
+        df = pd.DataFrame(vals).set_index("t").tail(300)
+        chart_ph.line_chart(df["value"])
+    except Exception as e:
+        st.warning(f"REST error: {e}")
     time.sleep(1)
-    run = st.session_state.get("Live refresh (1 Hz)", True)
