@@ -7,6 +7,7 @@ import inspect
 import dataclasses
 from enum import Enum
 from functools import reduce
+import standardbots
 
 import streamlit as st
 
