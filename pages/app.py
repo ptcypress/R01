@@ -1,5 +1,5 @@
-# streamlit_sb_ok_demo.py — unified rewrite with method discovery, JSON-safe rendering,
-# robust RobotKind selection, and smoother auto-refresh.
+# streamlit_sb_ok_demo.py — Simple/Advanced modes, method discovery, JSON-safe rendering
+# Robust RobotKind selection and smoother auto-refresh. No JSON box in Simple mode.
 
 import json
 import time
@@ -22,33 +22,26 @@ Import error: {}""".format(e))
 st.set_page_config(page_title="Standard Bots – Live Reader (.ok())", layout="wide")
 
 # =====================================================================================
-# Helpers (serialization, discovery, invocation, categorization)
+# Helpers (serialization, discovery, invocation)
 # =====================================================================================
 
 def _to_jsonable(obj):
     """Convert SDK returns (pydantic models, dataclasses, enums, bytes, etc.)
     into JSON-renderable Python primitives for st.json()."""
     try:
-        # pydantic v2
-        if hasattr(obj, "model_dump") and callable(obj.model_dump):
+        if hasattr(obj, "model_dump") and callable(obj.model_dump):  # pydantic v2
             return obj.model_dump()
-        # pydantic v1
-        if hasattr(obj, "dict") and callable(obj.dict):
+        if hasattr(obj, "dict") and callable(obj.dict):  # pydantic v1
             return obj.dict()
-        # dataclass
         if dataclasses.is_dataclass(obj):
             return dataclasses.asdict(obj)
-        # enum
         if isinstance(obj, Enum):
             return obj.value
-        # bytes
         if isinstance(obj, (bytes, bytearray)):
             return obj.decode(errors="replace")
-        # containers / primitives
         json.dumps(obj)  # probe serializability
         return obj
     except TypeError:
-        # last-resort fallback
         return {"value": str(obj)}
 
 
@@ -81,7 +74,6 @@ def _discover_methods(root, max_depth: int = 2):
             if callable(child):
                 results.append({"path": full, "signature": _sig_str(child)})
                 continue
-            # Skip obvious data types
             if isinstance(child, (str, bytes, bytearray, int, float, bool, dict, list, tuple, Enum)):
                 continue
             oid = id(child)
@@ -108,15 +100,10 @@ def _resolve_method(root, dotted: str):
 
 
 def _call_ok_unwrap(method, **kwargs):
-    """Invoke SDK method and unwrap via .ok(). On failure, return debug info.
-    Handles two failure stages:
-      1) invocation errors before a Response exists (bad/missing kwargs)
-      2) non-200 responses when calling .ok()
-    """
+    """Invoke SDK method and unwrap via .ok(). If invocation fails, return debug info."""
     try:
         resp = method(**kwargs)
     except Exception as e:
-        # Method invocation failed before a Response object was created
         import traceback as _tb
         return {
             "success": False,
@@ -145,8 +132,7 @@ def _call_ok_unwrap(method, **kwargs):
         }
 
 
-def _safe_rerun(
-):
+def _safe_rerun():
     if hasattr(st, "rerun"):
         st.rerun()
     elif hasattr(st, "experimental_rerun"):
@@ -177,15 +163,15 @@ robot_kind = st.sidebar.selectbox(
     format_func=lambda m: getattr(m, "name", str(m)).capitalize(),
 )
 
-# Refresh behavior
 refresh_sec = st.sidebar.number_input("Refresh interval (sec)", 1, 60, 5)
 auto_refresh = st.sidebar.checkbox("Auto-refresh", True)
 
-# Instantiate SDK once per run (cheap)
+# Instantiate SDK once per run
 sdk = StandardBotsRobot(url=url, token=token, robot_kind=robot_kind)
 
 # Method discovery trigger
 with st.sidebar:
+    simple_mode = st.toggle("Simple mode", value=True, help="Hide advanced inputs; use presets + discovered methods.")
     if st.button("🔎 Discover methods (depth 2)", key="discover_btn"):
         with st.spinner("Scanning SDK object graph…"):
             with sdk.connection():
@@ -193,13 +179,13 @@ with st.sidebar:
         st.session_state["discovered_methods"] = methods
 
 # =====================================================================================
-# Main: endpoint selection + kwargs + invoke
+# Main UI
 # =====================================================================================
 
 st.title("Standard Bots – Methods • Models • Responses")
 st.caption("Call SDK endpoints and unwrap with `.ok()` to show real values.")
 
-# Apply pending endpoint (from discovery panel) BEFORE creating the input widget
+# Apply pending endpoint (from discovery panel) BEFORE creating widgets
 if "pending_endpoint" in st.session_state:
     st.session_state["endpoint_input"] = st.session_state.pop("pending_endpoint")
 
@@ -209,63 +195,68 @@ PRESETS = [
     "equipment.get_gripper_configuration",
 ]
 
-st.markdown("#### Choose an SDK endpoint")
-colA, colB = st.columns([2, 1])
-endpoint_pick = colA.selectbox("Method path (dot notation)", PRESETS, index=0)
-endpoint = colA.text_input(
-    "…or type a method path",
-    value=st.session_state.get("endpoint_input", endpoint_pick),
-    key="endpoint_input",
-    help="Example: movement.brakes.get_brakes_state",
-)
+# -------------------- Simple Mode --------------------
+if simple_mode:
+    st.subheader("Pick a method")
+    src = st.radio("Source", ["Presets", "Discovered"], horizontal=True)
 
-kwargs_text = colB.text_area(
-    "Method kwargs (JSON)",
-    value=st.session_state.get("kwargs_text", "{}"),
-    height=120,
-    help='e.g. {"axis":"x"} if the method takes parameters',
-    key="kwargs_text",
-)
-
-try:
-    call_kwargs = json.loads(kwargs_text) if kwargs_text.strip() else {}
-except Exception as e:
-    st.error(f"Invalid kwargs JSON: {e}")
-    call_kwargs = {}
-
-# Discovery results panel
-if st.session_state.get("discovered_methods"):
-    methods = st.session_state["discovered_methods"]
-    with st.expander(f"Discovered methods ({len(methods)})", expanded=False):
-        options = [m["path"] for m in methods]
-        pick = st.selectbox("Pick a method", options, index=0, key="pick_discovered")
-        sig = next((m["signature"] for m in methods if m["path"] == pick), "(...)")
-        st.code(f"{pick}{sig}")
-        use_col1, _ = st.columns([1, 3])
-        if use_col1.button("Use selected", key="use_selected_btn"):
-            # Defer applying to input until next run to avoid state-mutation errors
-            st.session_state["pending_endpoint"] = pick
-            _safe_rerun()
-
-# Output slots (stable to reduce visible flicker)
-result_slot = st.empty()
-raw_slot = st.expander("Raw / Debug", expanded=False)
-
-# Invoke once per run
-with sdk.connection():
-    try:
-        method = _resolve_method(sdk, endpoint)
-    except Exception as e:
-        result_slot.error(str(e))
+    chosen = None
+    if src == "Presets":
+        chosen = st.selectbox("Preset methods", PRESETS, index=0, key="preset_pick")
     else:
-        # Show signature (best-effort)
+        if not st.session_state.get("discovered_methods"):
+            st.info("No discovered methods yet. Click 'Discover methods' in the sidebar.")
+        else:
+            disc = st.session_state["discovered_methods"]
+            options = [m["path"] for m in disc]
+            chosen = st.selectbox("Discovered methods", options, index=0, key="disc_pick")
+            sig = next((m["signature"] for m in disc if m["path"] == chosen), "(...)")
+            st.code(f"{chosen}{sig}")
+
+    # Build a tiny form for required kwargs (no JSON editing)
+    call_kwargs = {}
+    if chosen:
         try:
-            st.caption(f"Signature: `{endpoint}{inspect.signature(method)}`")
-        except Exception:
-            pass
-        res = _call_ok_unwrap(method, **call_kwargs)
+            method = _resolve_method(sdk, chosen)
+            sig = inspect.signature(method)
+            params = [p for p in sig.parameters.values() if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)]
+            required = [p for p in params if p.default is p.empty]
+            optional = [p for p in params if p.default is not p.empty]
+
+            if required or optional:
+                with st.expander("Parameters", expanded=bool(required)):
+                    if required:
+                        st.caption("Required")
+                        for p in required:
+                            v = st.text_input(f"{p.name}", key=f"arg:{chosen}:{p.name}")
+                            if v != "":
+                                try:
+                                    call_kwargs[p.name] = json.loads(v)
+                                except Exception:
+                                    call_kwargs[p.name] = v  # fallback string
+                    if optional:
+                        show_opt = st.checkbox("Show optional parameters", value=False, key=f"opt:{chosen}")
+                        if show_opt:
+                            for p in optional:
+                                default_repr = repr(p.default)
+                                v = st.text_input(f"{p.name} (default {default_repr})", key=f"arg:{chosen}:{p.name}")
+                                if v != "":
+                                    try:
+                                        call_kwargs[p.name] = json.loads(v)
+                                    except Exception:
+                                        call_kwargs[p.name] = v
+        except Exception as e:
+            st.error(str(e))
+            chosen = None
+
+    result_slot = st.empty()
+    raw_slot = st.expander("Raw / Debug", expanded=False)
+
+    if chosen and st.button("Call method", type="primary"):
+        with sdk.connection():
+            res = _call_ok_unwrap(_resolve_method(sdk, chosen), **call_kwargs)
         if res["success"]:
-            result_slot.success(f"✅ {endpoint} → 200 OK")
+            result_slot.success(f"✅ {chosen} → 200 OK")
             _data = _to_jsonable(res["data"])
             try:
                 st.json(_data)
@@ -273,12 +264,82 @@ with sdk.connection():
                 st.write(_data)
         else:
             status = res.get("status")
-            result_slot.error(f"❌ {endpoint} failed (status={status})")
+            result_slot.error(f"❌ {chosen} failed (status={status}, stage={(res.get('raw') or {}).get('stage')})")
             _raw = _to_jsonable(res["raw"]) if res["raw"] is not None else None
             try:
                 raw_slot.json(_raw)
             except Exception:
                 raw_slot.write(_raw)
+
+# -------------------- Advanced Mode --------------------
+else:
+    st.subheader("Advanced")
+    st.markdown("Use dotted method path and raw JSON kwargs (original UI).")
+
+    st.markdown("#### Choose an SDK endpoint")
+    colA, colB = st.columns([2, 1])
+    endpoint_pick = colA.selectbox("Method path (dot notation)", PRESETS, index=0)
+    endpoint = colA.text_input(
+        "…or type a method path",
+        value=st.session_state.get("endpoint_input", endpoint_pick),
+        key="endpoint_input",
+        help="Example: movement.brakes.get_brakes_state",
+    )
+
+    kwargs_text = colB.text_area(
+        "Method kwargs (JSON)",
+        value=st.session_state.get("kwargs_text", "{}"),
+        height=120,
+        help='e.g. {"axis":"x"} if the method takes parameters',
+        key="kwargs_text",
+    )
+
+    try:
+        call_kwargs = json.loads(kwargs_text) if kwargs_text.strip() else {}
+    except Exception as e:
+        st.error(f"Invalid kwargs JSON: {e}")
+        call_kwargs = {}
+
+    if st.session_state.get("discovered_methods"):
+        methods = st.session_state["discovered_methods"]
+        with st.expander(f"Discovered methods ({len(methods)})", expanded=False):
+            options = [m["path"] for m in methods]
+            pick = st.selectbox("Pick a method", options, index=0, key="pick_discovered")
+            sig = next((m["signature"] for m in methods if m["path"] == pick), "(...)")
+            st.code(f"{pick}{sig}")
+            if st.button("Use selected", key="use_selected_btn"):
+                st.session_state["pending_endpoint"] = pick
+                _safe_rerun()
+
+    result_slot = st.empty()
+    raw_slot = st.expander("Raw / Debug", expanded=False)
+
+    with sdk.connection():
+        try:
+            method = _resolve_method(sdk, endpoint)
+        except Exception as e:
+            result_slot.error(str(e))
+        else:
+            try:
+                st.caption(f"Signature: `{endpoint}{inspect.signature(method)}`")
+            except Exception:
+                pass
+            res = _call_ok_unwrap(method, **call_kwargs)
+            if res["success"]:
+                result_slot.success(f"✅ {endpoint} → 200 OK")
+                _data = _to_jsonable(res["data"])
+                try:
+                    st.json(_data)
+                except Exception:
+                    st.write(_data)
+            else:
+                status = res.get("status")
+                result_slot.error(f"❌ {endpoint} failed (status={status})")
+                _raw = _to_jsonable(res["raw"]) if res["raw"] is not None else None
+                try:
+                    raw_slot.json(_raw)
+                except Exception:
+                    raw_slot.write(_raw)
 
 # Smoother auto-refresh: prefer st.autorefresh if available; otherwise fallback
 if auto_refresh:
