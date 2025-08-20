@@ -253,7 +253,14 @@ robot_kind = st.sidebar.selectbox(
     format_func=lambda m: getattr(m, "name", str(m)).capitalize(),
 )
 
-refresh_sec = st.sidebar.number_input("Refresh interval (sec)", 1, 60, 5)
+refresh_sec = st.sidebar.number_input(
+    "Refresh interval (sec)",
+    min_value=0.1,
+    max_value=60.0,
+    value=1.0,
+    step=0.1,
+    help="Polling interval for auto-refresh; sub-second supported."
+)
 auto_refresh = st.sidebar.checkbox("Auto-refresh", True)
 
 # Instantiate SDK once per run
