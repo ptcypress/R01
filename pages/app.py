@@ -140,10 +140,13 @@ if "discovered_methods" in st.session_state:
         sig = next((m["signature"] for m in methods if m["path"] == pick), "(…)")
         st.code(f"{pick}{sig}")
         if st.button("Use selected"):
-            st.session_state["endpoint_input"] = pick
-            # Trigger a rerun to propagate into the text input
-            if hasattr(st, "rerun"):
-                st.rerun()
+        # Set a temporary key since the text_input is already mounted this run
+        st.session_state["pending_endpoint"] = pick
+        # Trigger a rerun so the value is applied BEFORE the widget renders
+        if hasattr(st, "rerun"):
+            st.rerun()
+        elif hasattr(st, "experimental_rerun"):
+            st.experimental_rerun()
             elif hasattr(st, "experimental_rerun"):
                 st.experimental_rerun()
 
