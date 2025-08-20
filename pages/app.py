@@ -23,7 +23,7 @@ Import error: {}""".format(e))
 st.set_page_config(page_title="Standard Bots – Live Reader (.ok())", layout="wide")
 
 # =====================================================================================
-# Helpers (serialization, discovery, invocation)
+# Helpers (serialization, discovery, invocation, type-hinted templates)
 # =====================================================================================
 
 def _to_jsonable(obj):
@@ -44,6 +44,44 @@ def _to_jsonable(obj):
         return obj
     except TypeError:
         return {"value": str(obj)}
+
+
+def _schema_to_template(schema: dict, depth: int = 2):
+    """Best-effort skeleton from a JSON schema (limited depth to keep UI tidy)."""
+    if depth < 0 or not isinstance(schema, dict):
+        return None
+    typ = schema.get("type")
+    if typ == "object":
+        props = schema.get("properties", {})
+        out = {}
+        for k, v in props.items():
+            out[k] = _schema_to_template(v, depth - 1)
+        return out
+    if typ == "array":
+        items = schema.get("items", {})
+        return [_schema_to_template(items, depth - 1)]
+    # Primitive fallback
+    if "default" in schema:
+        return schema["default"]
+    if "enum" in schema:
+        return schema["enum"][0]
+    return None
+
+
+def _template_for_annotation(ann):
+    """Try to derive a JSON-able template from a type annotation (pydantic)."""
+    try:
+        # Pydantic v2
+        if hasattr(ann, "model_json_schema") and callable(getattr(ann, "model_json_schema")):
+            schema = ann.model_json_schema()
+            return _schema_to_template(schema)
+        # Pydantic v1
+        if hasattr(ann, "schema") and callable(getattr(ann, "schema")):
+            schema = ann.schema()
+            return _schema_to_template(schema)
+    except Exception:
+        pass
+    return None
 
 
 def _sig_str(fn):
@@ -191,7 +229,8 @@ PRESETS_PATH = "/mnt/data/sb_presets.json"
 with st.sidebar.expander("Manage presets", expanded=False):
     presets = st.session_state.get("presets", [])
     st.caption("Current presets:")
-    st.code("".join(presets) or "<empty>")
+    st.code("
+".join(presets) or "<empty>")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         if st.button("Save", key="save_presets"):
@@ -289,7 +328,16 @@ if simple_mode:
                     if required:
                         st.caption("Required")
                         for p in required:
-                            v = st.text_input(f"{p.name}", key=f"arg:{chosen}:{p.name}")
+                            key = f"arg:{chosen}:{p.name}"
+                            colL, colR = st.columns([3,1])
+                            v = colL.text_input(f"{p.name}", key=key)
+                            tmpl = None
+                            if p.annotation and p.annotation is not inspect._empty:
+                                tmpl = _template_for_annotation(p.annotation)
+                            if tmpl is not None:
+                                if colR.button("Load template", key=f"tmpl:{key}"):
+                                    st.session_state[key] = json.dumps(tmpl, indent=2)
+                                    _safe_rerun()
                             if v != "":
                                 try:
                                     call_kwargs[p.name] = json.loads(v)
@@ -299,8 +347,17 @@ if simple_mode:
                         show_opt = st.checkbox("Show optional parameters", value=False, key=f"opt:{chosen}")
                         if show_opt:
                             for p in optional:
+                                key = f"arg:{chosen}:{p.name}"
                                 default_repr = repr(p.default)
-                                v = st.text_input(f"{p.name} (default {default_repr})", key=f"arg:{chosen}:{p.name}")
+                                colL, colR = st.columns([3,1])
+                                v = colL.text_input(f"{p.name} (default {default_repr})", key=key)
+                                tmpl = None
+                                if p.annotation and p.annotation is not inspect._empty:
+                                    tmpl = _template_for_annotation(p.annotation)
+                                if tmpl is not None:
+                                    if colR.button("Load template", key=f"tmpl:{key}"):
+                                        st.session_state[key] = json.dumps(tmpl, indent=2)
+                                        _safe_rerun()
                                 if v != "":
                                     try:
                                         call_kwargs[p.name] = json.loads(v)
