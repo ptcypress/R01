@@ -6,6 +6,8 @@ import inspect
 from functools import reduce
 
 import streamlit as st
+import dataclasses
+from enum import Enum
 
 try:
     from standardbots import StandardBotsRobot, models  # models optional
@@ -57,8 +59,7 @@ st.caption("Calls SDK endpoints and unwraps with `.ok()` to show real values.")
 PRESETS = [
     "movement.brakes.get_brakes_state",
     "equipment.get_gripper_configuration",
-    "system.get_status",
-    "diagnostics.get_health",
+    # Add more verified endpoints here after you test them
 ]
 
 st.markdown("#### Choose an SDK endpoint")
@@ -112,6 +113,31 @@ def call_ok_unwrap(method, **kwargs):
             },
         }
 
+# JSON-safe serialization helpers (avoid st.json errors when SDK returns models/enums)
+def _to_jsonable(obj):
+    try:
+        # pydantic v2
+        if hasattr(obj, "model_dump") and callable(obj.model_dump):
+            return obj.model_dump()
+        # pydantic v1
+        if hasattr(obj, "dict") and callable(obj.dict):
+            return obj.dict()
+        # dataclass
+        if dataclasses.is_dataclass(obj):
+            return dataclasses.asdict(obj)
+        # enum
+        if isinstance(obj, Enum):
+            return obj.value
+        # bytes
+        if isinstance(obj, (bytes, bytearray)):
+            return obj.decode(errors="replace")
+        # primitives / containers already JSON-friendly
+        json.dumps(obj)  # test serializability
+        return obj
+    except TypeError:
+        # best-effort fallback to string
+        return {"value": str(obj)}
+
 # UI slots
 result_slot = st.empty()
 raw_slot = st.expander("Raw / Debug", expanded=False)
@@ -143,11 +169,19 @@ def run_once():
         res = call_ok_unwrap(method, **call_kwargs)
         if res["success"]:
             result_slot.success(f"✅ {endpoint} → 200 OK")
-            st.json(res["data"])
+            _data = _to_jsonable(res["data"])
+            try:
+                st.json(_data)
+            except Exception:
+                st.write(_data)
         else:
             status = res.get("status")
             result_slot.error(f"❌ {endpoint} failed (status={status})")
-            raw_slot.write(res["raw"])
+            _raw = _to_jsonable(res["raw"])
+            try:
+                raw_slot.json(_raw)
+            except Exception:
+                raw_slot.write(_raw)
 
 # First call
 run_once()
