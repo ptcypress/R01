@@ -223,7 +223,7 @@ endpoint = colA.text_input(
 )
 
 kwargs_text = colB.text_area(
-    "Method kwargs (JSONtry:
+    Method kwargs (JSONtry:
     call_kwargs = json.loads(kwargs_text) if kwargs_text.strip() else {}
 except Exception as e:
     st.error(f"Invalid kwargs JSON: {e}")
