@@ -145,11 +145,8 @@ def _call_ok_unwrap(method, **kwargs):
         }
 
 
-def _safe_rerun():
-    if hasattr(st, "rerun"):
-        st.rerun()
-    elif hasattr(st, "experimental_rerun"):
-        st.experimental_rerun()
+def _safe_rerun(
+):
     if hasattr(st, "rerun"):
         st.rerun()
     elif hasattr(st, "experimental_rerun"):
@@ -223,7 +220,14 @@ endpoint = colA.text_input(
 )
 
 kwargs_text = colB.text_area(
-    Method kwargs (JSONtry:
+    "Method kwargs (JSON)",
+    value=st.session_state.get("kwargs_text", "{}"),
+    height=120,
+    help='e.g. {"axis":"x"} if the method takes parameters',
+    key="kwargs_text",
+)
+
+try:
     call_kwargs = json.loads(kwargs_text) if kwargs_text.strip() else {}
 except Exception as e:
     st.error(f"Invalid kwargs JSON: {e}")
