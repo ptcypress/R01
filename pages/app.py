@@ -14,13 +14,9 @@ import streamlit as st
 try:
     from standardbots import StandardBotsRobot, models  # noqa: F401
 except Exception as e:
-    st.error(
-        "Failed to import 'standardbots'. Install it first.
-"
-        "Tip: pip install --no-cache-dir standardbots
-"
-        f"Import error: {e}"
-    )
+    st.error("""Failed to import 'standardbots'. Install it first.
+Tip: pip install --no-cache-dir standardbots
+Import error: {}""".format(e))
     st.stop()
 
 st.set_page_config(page_title="Standard Bots – Live Reader (.ok())", layout="wide")
