@@ -8,6 +8,7 @@ from functools import reduce
 import streamlit as st
 import dataclasses
 from enum import Enum
+from types import FunctionType, MethodType
 
 try:
     from standardbots import StandardBotsRobot, models  # models optional
@@ -65,7 +66,10 @@ PRESETS = [
 st.markdown("#### Choose an SDK endpoint")
 colA, colB = st.columns([2, 1])
 endpoint = colA.selectbox("Method path (dot notation)", PRESETS, index=0)
-endpoint = colA.text_input("…or type a method path", value=endpoint, help="Example: movement.brakes.get_brakes_state")
+endpoint = colA.text_input("…or type a method path",
+                           value=st.session_state.get("endpoint_input", endpoint),
+                           key="endpoint_input",
+                           help="Example: movement.brakes.get_brakes_state")
 
 # Optional kwargs as JSON
 kwargs_text = colB.text_area("Method kwargs (JSON)", value="{}", height=110,
@@ -82,6 +86,29 @@ sdk = StandardBotsRobot(
     token=token,
     robot_kind=robot_kind,
 )
+
+# --- Method discovery UI ---
+with st.sidebar:
+    if st.button("🔎 Discover methods (depth 2)"):
+        with st.spinner("Scanning SDK object graph…"):
+            with sdk.connection():
+                methods = _discover_methods(sdk, max_depth=2)
+        st.session_state["discovered_methods"] = methods
+
+if "discovered_methods" in st.session_state:
+    methods = st.session_state["discovered_methods"]
+    with st.expander(f"Discovered methods ({len(methods)})", expanded=False):
+        options = [m["path"] for m in methods]
+        pick = st.selectbox("Pick a method", options, key="pick_discovered")
+        sig = next((m["signature"] for m in methods if m["path"] == pick), "(…)")
+        st.code(f"{pick}{sig}")
+        if st.button("Use selected"):
+            st.session_state["endpoint_input"] = pick
+            # Trigger a rerun to propagate into the text input
+            if hasattr(st, "rerun"):
+                st.rerun()
+            elif hasattr(st, "experimental_rerun"):
+                st.experimental_rerun()
 
 # Utility: resolve dotted attribute path on sdk (e.g., "movement.brakes.get_brakes_state")
 def resolve_method(root, dotted: str):
@@ -116,27 +143,57 @@ def call_ok_unwrap(method, **kwargs):
 # JSON-safe serialization helpers (avoid st.json errors when SDK returns models/enums)
 def _to_jsonable(obj):
     try:
-        # pydantic v2
         if hasattr(obj, "model_dump") and callable(obj.model_dump):
             return obj.model_dump()
-        # pydantic v1
         if hasattr(obj, "dict") and callable(obj.dict):
             return obj.dict()
-        # dataclass
         if dataclasses.is_dataclass(obj):
             return dataclasses.asdict(obj)
-        # enum
         if isinstance(obj, Enum):
             return obj.value
-        # bytes
         if isinstance(obj, (bytes, bytearray)):
             return obj.decode(errors="replace")
-        # primitives / containers already JSON-friendly
-        json.dumps(obj)  # test serializability
+        json.dumps(obj)
         return obj
     except TypeError:
-        # best-effort fallback to string
         return {"value": str(obj)}
+
+# Method discovery (depth-limited, safe)
+def _sig_str(fn):
+    try:
+        return str(inspect.signature(fn))
+    except Exception:
+        return "(…)"
+
+def _discover_methods(root, max_depth: int = 2):
+    seen = set()
+    results = []
+    def walk(obj, path: str, depth: int):
+        if depth > max_depth:
+            return
+        try:
+            names = [n for n in dir(obj) if not n.startswith("_")]
+        except Exception:
+            return
+        for n in names:
+            try:
+                child = getattr(obj, n)
+            except Exception:
+                continue
+            full = f"{path}.{n}" if path else n
+            if callable(child):
+                results.append({"path": full, "signature": _sig_str(child)})
+                continue
+            if isinstance(child, (str, bytes, bytearray, int, float, bool, dict, list, tuple, Enum)):
+                continue
+            oid = id(child)
+            if oid in seen:
+                continue
+            seen.add(oid)
+            walk(child, full, depth + 1)
+    walk(root, "", 0)
+    results.sort(key=lambda r: r["path"])
+    return results
 
 # UI slots
 result_slot = st.empty()
