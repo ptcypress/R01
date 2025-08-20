@@ -22,7 +22,7 @@ Import error: {}""".format(e))
 st.set_page_config(page_title="Standard Bots – Live Reader (.ok())", layout="wide")
 
 # =====================================================================================
-# Helpers
+# Helpers (serialization, discovery, invocation, categorization)
 # =====================================================================================
 
 def _to_jsonable(obj):
