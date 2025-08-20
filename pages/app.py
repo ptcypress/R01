@@ -1,122 +1,124 @@
-# file: app.py
-# pip install streamlit standardbots pandas
+# streamlit_sb_ok_demo.py
 
 import time
-import pandas as pd
+import json
+import inspect
+from functools import reduce
+
 import streamlit as st
-from datetime import datetime
-from standardbots import StandardBotsRobot
+from standardbots import StandardBotsRobot, api  # api imported for enums/types if needed
 
-# --- Page setup ---
-st.set_page_config(page_title="RO1 Live (Standard Bots SDK)", layout="wide")
+st.set_page_config(page_title="Standard Bots – Live Reader (.ok())", layout="wide")
 
-# --- Sidebar inputs ---
-default_url   = st.secrets.get("sb_url", "https://cb2114.sb.app")
+# --- Sidebar auth/config ---
+default_url   = st.secrets.get("sb_url", "https://<your-workspace>.sb.app")
 default_token = st.secrets.get("sb_token", "")
-url   = st.sidebar.text_input("Workspace URL", default_url, help="e.g., https://<workspace>.sb.app")
+
+st.sidebar.markdown("### Connection")
+url   = st.sidebar.text_input("Workspace URL", default_url)
 token = st.sidebar.text_input("API Token", default_token, type="password")
-vars_csv = st.sidebar.text_input("Variables (comma-separated)", "speed_rpm,load_pct,at_home")
-refresh = st.sidebar.slider("Refresh interval (s)", 0.5, 5.0, 1.0, 0.5)
-run     = st.sidebar.toggle("Start streaming", value=False)
 
-# --- Layout placeholders ---
-st.title("RO1 Live via Standard Bots SDK")
-status_ph = st.empty()
-k1, k2, k3, k4 = st.columns(4)
-table_ph = st.empty()
-chart_ph = st.empty()
+robot_kind = st.sidebar.selectbox(
+    "Robot kind",
+    options=[StandardBotsRobot.RobotKind.Simulated, StandardBotsRobot.RobotKind.Real],
+    index=0,
+    format_func=lambda k: "Simulated" if k == StandardBotsRobot.RobotKind.Simulated else "Real",
+)
 
-# --- Cache robot instance ---
-@st.cache_resource(show_spinner=False)
-def get_robot(u, t):
-    return StandardBotsRobot(url=u, token=t, robot_kind=StandardBotsRobot.RobotKind.Live)
+refresh_sec = st.sidebar.number_input("Refresh interval (sec)", 1, 30, 3)
+auto_refresh = st.sidebar.checkbox("Auto-refresh", True)
 
-# --- Session state for history ---
-if "hist" not in st.session_state:
-    st.session_state.hist = pd.DataFrame(columns=["ts"])
+st.title("Standard Bots – Methods • Models • Responses")
+st.caption("Calls SDK endpoints and unwraps with `.ok()` to show real values.")
 
-def append_hist(sample: dict):
-    row = {"ts": datetime.utcnow(), **sample}
-    st.session_state.hist = pd.concat([st.session_state.hist, pd.DataFrame([row])], ignore_index=True)
-    if len(st.session_state.hist) > 300:
-        st.session_state.hist = st.session_state.hist.tail(300).reset_index(drop=True)
+# Common presets you can extend
+PRESETS = [
+    "movement.brakes.get_brakes_state",
+    "equipment.get_gripper_configuration",
+    "system.get_status",            # if present in your SDK
+    "diagnostics.get_health",       # if present in your SDK
+]
+st.markdown("#### Choose an SDK endpoint")
+colA, colB = st.columns([2, 1])
+endpoint = colA.selectbox("Method path (dot notation)", PRESETS, index=0)
+endpoint = colA.text_input("…or type a method path", value=endpoint, help="Example: movement.brakes.get_brakes_state")
 
-# --- Helper for variable reads ---
-def read_by_name(vc, name: str):
+# Optional kwargs as JSON
+kwargs_text = colB.text_area("Method kwargs (JSON)", value="{}", height=100, help='e.g. {"axis":"x"} if the method takes parameters')
+try:
+    call_kwargs = json.loads(kwargs_text) if kwargs_text.strip() else {}
+except Exception as e:
+    st.error(f"Invalid kwargs JSON: {e}")
+    call_kwargs = {}
+
+# --- SDK init ---
+sdk = StandardBotsRobot(
+    url=url,
+    token=token,
+    robot_kind=robot_kind,
+)
+
+# Utility: resolve dotted attribute path on sdk (e.g., "movement.brakes.get_brakes_state")
+def resolve_method(root, dotted):
     try:
-        resp = vc.load(name)
-
-        # Dict response
-        if isinstance(resp, dict):
-            return resp.get("value") or resp.get("data") or resp
-
-        # SDK object with common attributes
-        if hasattr(resp, "value"):
-            return resp.value
-        if hasattr(resp, "data"):
-            return resp.data
-        if hasattr(resp, "__dict__"):
-            d = resp.__dict__
-            return d.get("value") or d.get("data") or str(d)
-
-        # Fallback to string
-        return str(resp)
-    except Exception:
-        return None
-
-# --- Main logic ---
-if run:
-    if not url or not token:
-        status_ph.error("Enter URL and API token, then toggle Start.")
-        st.stop()
-
-    robot = get_robot(url, token)
-    names = [v.strip() for v in vars_csv.split(",") if v.strip()]
-    sample = {}
-
-    try:
-        with robot.connection():
-            # Basic status
-            s = robot.status
-            status_ph.success(
-                f"Connected · Mode={getattr(s.control, 'mode', None)} · "
-                f"EStop={getattr(s.control, 'estop', None)}"
-            )
-
-            vc = robot.routine_editor.variables
-
-            # Read each requested variable
-            for n in names:
-                sample[n] = read_by_name(vc, n)
-
+        parts = dotted.split(".")
+        obj = reduce(getattr, parts, root)
+        if not callable(obj):
+            raise AttributeError(f"Resolved object is not callable: {dotted}")
+        return obj
     except Exception as e:
-        status_ph.error(f"SDK error: {e}")
-        time.sleep(min(2.0, refresh))
-        st.rerun()
+        raise RuntimeError(f"Could not resolve method '{dotted}': {e}")
 
-    # KPIs (first four)
-    for col, label in zip([k1, k2, k3, k4], names[:4]):
-        val = sample.get(label)
-        col.metric(label, "-" if val is None else str(val))
+# Call helper that uses .ok() unwrapping; falls back to raw on error
+def call_ok_unwrap(method, **kwargs):
+    resp = method(**kwargs)
+    # Try the happy path: unwrap with ok()
+    try:
+        data = resp.ok()  # <- per docs: asserts 200 and returns unwrapped data
+        return {"success": True, "data": data, "status": 200, "raw": None}
+    except Exception as unwarp_error:
+        # Fall back to raw fields for debugging
+        status = getattr(resp, "status", None)
+        raw = {
+            "status": status,
+            "data": getattr(resp, "data", None),
+            "error": str(unwarp_error),
+        }
+        return {"success": False, "data": None, "status": status, "raw": raw}
 
-    # Table of all requested variables (stable, avoids flicker)
-    df_vars = pd.DataFrame([sample]).T
-    df_vars.columns = ["value"]
-    table_ph.dataframe(df_vars)
+result_slot = st.empty()
+raw_slot = st.expander("Raw / Debug", expanded=False)
 
-    # Chart numeric variables over time
-    append_hist(sample)
-    df = st.session_state.hist.set_index("ts")
-    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-    if num_cols:
-        chart_ph.line_chart(df[num_cols])
+def run_once():
+    with sdk.connection():
+        try:
+            method = resolve_method(sdk, endpoint)
+        except RuntimeError as e:
+            result_slot.error(str(e))
+            return
 
-    # --- Auto-refresh ---
-    time.sleep(refresh)
-    st.rerun()
+        # Introspect signature to help the user (optional)
+        try:
+            sig = inspect.signature(method)
+            st.caption(f"Signature: `{endpoint}{sig}`")
+        except Exception:
+            pass
 
-else:
-    status_ph.info(
-        "Fill URL/token, list your variable names, then toggle Start. "
-        "This uses the SDK via your *.sb.app workspace (no LAN REST/Modbus needed)."
-    )
+        res = call_ok_unwrap(method, **call_kwargs)
+
+        if res["success"]:
+            result_slot.success(f"✅ {endpoint} → 200 OK")
+            # Show unpacked values cleanly
+            st.json(res["data"])
+        else:
+            result_slot.error(f"❌ {endpoint} failed (status={res['status']})")
+            raw_slot.write(res["raw"])
+
+# First call
+run_once()
+
+# Polling loop (no flicker; updates in place)
+if auto_refresh:
+    while True:
+        time.sleep(refresh_sec)
+        run_once()
