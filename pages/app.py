@@ -8,6 +8,7 @@ import dataclasses
 from enum import Enum
 from functools import reduce
 import os
+from types import SimpleNamespace
 
 import streamlit as st
 
@@ -182,36 +183,49 @@ def _coerce_kwargs_to_models(method, kwargs: dict) -> dict:
     """Coerce plain dict/list kwargs into SDK model instances based on type hints.
     - Pydantic v2: uses .model_validate
     - Pydantic v1: uses .parse_obj
+    Fallback: wrap dict bodies in a SimpleNamespace so attribute access works (e.g., `.state`).
     If coercion fails, returns original value.
     """
     try:
         sig = inspect.signature(method)
     except Exception:
-        return kwargs
+        # No signature available; apply generic fallback
+        new_kwargs = dict(kwargs)
+        if isinstance(new_kwargs.get("body"), dict):
+            new_kwargs["body"] = SimpleNamespace(**new_kwargs["body"])
+        return new_kwargs
+
     new_kwargs = dict(kwargs)
     for name, param in sig.parameters.items():
         if name not in new_kwargs:
             continue
         ann = param.annotation
         val = new_kwargs[name]
-        if ann is inspect._empty:
-            continue
-        # dict -> model
-        try:
-            if isinstance(val, dict):
-                if hasattr(ann, "model_validate") and callable(ann.model_validate):
-                    new_kwargs[name] = ann.model_validate(val)
-                elif hasattr(ann, "parse_obj") and callable(getattr(ann, "parse_obj")):
-                    new_kwargs[name] = ann.parse_obj(val)
-            # list of dicts -> list[model]
-            elif isinstance(val, list) and val and isinstance(val[0], dict):
-                if hasattr(ann, "__args__") and getattr(ann, "__origin__", None) in (list, tuple):
-                    elem = ann.__args__[0]
-                    if hasattr(elem, "model_validate"):
-                        new_kwargs[name] = [elem.model_validate(x) if isinstance(x, dict) else x for x in val]
-        except Exception:
-            # leave original
-            pass
+        # Try model coercion from annotations
+        if ann is not inspect._empty:
+            try:
+                if isinstance(val, dict):
+                    if hasattr(ann, "model_validate") and callable(ann.model_validate):
+                        new_kwargs[name] = ann.model_validate(val)
+                        continue
+                    elif hasattr(ann, "parse_obj") and callable(getattr(ann, "parse_obj", None)):
+                        new_kwargs[name] = ann.parse_obj(val)
+                        continue
+                elif isinstance(val, list) and val and isinstance(val[0], dict):
+                    if hasattr(ann, "__args__") and getattr(ann, "__origin__", None) in (list, tuple):
+                        elem = ann.__args__[0]
+                        if hasattr(elem, "model_validate"):
+                            new_kwargs[name] = [elem.model_validate(x) if isinstance(x, dict) else x for x in val]
+                            continue
+            except Exception:
+                # Ignore and fall through to fallback
+                pass
+        # Fallback: for dict-like bodies, ensure attribute access (e.g., `.state`) works
+        if name == "body" and isinstance(val, dict):
+            try:
+                new_kwargs[name] = SimpleNamespace(**val)
+            except Exception:
+                pass
     return new_kwargs
 
 # =====================================================================================
