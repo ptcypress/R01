@@ -177,6 +177,43 @@ def _safe_rerun():
     elif hasattr(st, "experimental_rerun"):
         st.experimental_rerun()
 
+
+def _coerce_kwargs_to_models(method, kwargs: dict) -> dict:
+    """Coerce plain dict/list kwargs into SDK model instances based on type hints.
+    - Pydantic v2: uses .model_validate
+    - Pydantic v1: uses .parse_obj
+    If coercion fails, returns original value.
+    """
+    try:
+        sig = inspect.signature(method)
+    except Exception:
+        return kwargs
+    new_kwargs = dict(kwargs)
+    for name, param in sig.parameters.items():
+        if name not in new_kwargs:
+            continue
+        ann = param.annotation
+        val = new_kwargs[name]
+        if ann is inspect._empty:
+            continue
+        # dict -> model
+        try:
+            if isinstance(val, dict):
+                if hasattr(ann, "model_validate") and callable(ann.model_validate):
+                    new_kwargs[name] = ann.model_validate(val)
+                elif hasattr(ann, "parse_obj") and callable(getattr(ann, "parse_obj")):
+                    new_kwargs[name] = ann.parse_obj(val)
+            # list of dicts -> list[model]
+            elif isinstance(val, list) and val and isinstance(val[0], dict):
+                if hasattr(ann, "__args__") and getattr(ann, "__origin__", None) in (list, tuple):
+                    elem = ann.__args__[0]
+                    if hasattr(elem, "model_validate"):
+                        new_kwargs[name] = [elem.model_validate(x) if isinstance(x, dict) else x for x in val]
+        except Exception:
+            # leave original
+            pass
+    return new_kwargs
+
 # =====================================================================================
 # Sidebar: connection + robot kind + refresh + discovery
 # =====================================================================================
@@ -229,7 +266,8 @@ PRESETS_PATH = "/mnt/data/sb_presets.json"
 with st.sidebar.expander("Manage presets", expanded=False):
     presets = st.session_state.get("presets", [])
     st.caption("Current presets:")
-    st.code("".join(presets) or "<empty>")
+    st.code("
+".join(presets) or "<empty>")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         if st.button("Save", key="save_presets"):
@@ -371,7 +409,9 @@ if simple_mode:
 
     if chosen and st.button("Call method", type="primary"):
         with sdk.connection():
-            res = _call_ok_unwrap(_resolve_method(sdk, chosen), **call_kwargs)
+            m = _resolve_method(sdk, chosen)
+            coerced = _coerce_kwargs_to_models(m, call_kwargs)
+            res = _call_ok_unwrap(m, **coerced)
         if res["success"]:
             result_slot.success(f"✅ {chosen} → 200 OK")
             _data = _to_jsonable(res["data"])
@@ -460,7 +500,8 @@ else:
                 st.caption(f"Signature: `{endpoint}{inspect.signature(method)}`")
             except Exception:
                 pass
-            res = _call_ok_unwrap(method, **call_kwargs)
+            coerced = _coerce_kwargs_to_models(method, call_kwargs)
+            res = _call_ok_unwrap(method, **coerced)
             if res["success"]:
                 result_slot.success(f"✅ {endpoint} → 200 OK")
                 _data = _to_jsonable(res["data"])
@@ -476,6 +517,121 @@ else:
                     raw_slot.json(_raw)
                 except Exception:
                     raw_slot.write(_raw)
+
+# -------------------- IO Quick Actions --------------------
+st.subheader("IO Quick Actions")
+with st.expander("Control digital outputs (mirrors your status format)", expanded=False):
+    colx1, colx2 = st.columns([1,1])
+    do_fetch = colx1.button("↻ Refresh IO status", key="io_refresh")
+    show_raw = colx2.checkbox("Show raw IO status JSON", value=False, key="io_show_raw")
+
+    def _extract_outputs(struct):
+        """Return (container_key, outputs_list, id_key, state_key, as_enum) or (None, [], None, None, False)."""
+        data = _to_jsonable(struct)
+        # Look for nested 'digital' -> 'outputs'
+        if isinstance(data, dict):
+            # Case 1: top-level outputs
+            if isinstance(data.get("outputs"), list):
+                outs = data.get("outputs")
+                sample = outs[0] if outs else {}
+                id_key = next((k for k in ("channel","name","id","line_id") if k in (sample or {})), None)
+                state_key = next((k for k in ("state","value","level") if k in (sample or {})), None)
+                as_enum = isinstance((sample or {}).get(state_key, None), str)
+                return (None, outs, id_key, state_key, as_enum)
+            # Case 2: digital.outputs
+            if isinstance(data.get("digital"), dict) and isinstance(data["digital"].get("outputs"), list):
+                outs = data["digital"]["outputs"]
+                sample = outs[0] if outs else {}
+                id_key = next((k for k in ("channel","name","id","line_id") if k in (sample or {})), None)
+                state_key = next((k for k in ("state","value","level") if k in (sample or {})), None)
+                as_enum = isinstance((sample or {}).get(state_key, None), str)
+                return ("digital", outs, id_key, state_key, as_enum)
+        return (None, [], None, None, False)
+
+    if do_fetch:
+        with sdk.connection():
+            # Try both common spellings (SDK variants): get_io_state vs get_io_state()
+            try:
+                get_status = _resolve_method(sdk, "io.status.get_io_state")
+            except Exception:
+                try:
+                    get_status = _resolve_method(sdk, "io.status.get_io.state")
+                except Exception as e:
+                    st.error(f"Could not resolve IO status method: {e}")
+                    get_status = None
+            if get_status:
+                io_res = _call_ok_unwrap(get_status)
+                if io_res["success"]:
+                    st.session_state["io_status"] = io_res["data"]
+                else:
+                    st.error(f"Failed to fetch IO status (stage={(io_res.get('raw') or {}).get('stage')}, status={io_res.get('status')})")
+                    st.session_state["io_status"] = io_res.get("raw")
+
+    io_data = st.session_state.get("io_status")
+    if io_data is None:
+        st.info("Click **Refresh IO status** to load current outputs.")
+    else:
+        if show_raw:
+            try:
+                st.json(_to_jsonable(io_data))
+            except Exception:
+                st.write(io_data)
+        container_key, outs, id_key, state_key, as_enum = _extract_outputs(io_data)
+        if not outs:
+            st.warning("Could not detect an 'outputs' list in the IO status response. Use Advanced mode for manual control.")
+        else:
+            st.caption(f"Detected outputs: using id='{id_key}', state='{state_key}', enum={as_enum}")
+            # Table-like UI with per-line set HIGH/LOW
+            for idx, item in enumerate(outs):
+                row = _to_jsonable(item) or {}
+                ident = row.get(id_key, f"out_{idx}")
+                current = row.get(state_key)
+                c1, c2, c3, c4 = st.columns([2,1,1,3])
+                c1.write(f"**{ident}**")
+                c4.write(f"Current: `{current}`")
+                def _make_body(value):
+                    # Build update body mirroring the detected format
+                    update_item = {id_key: ident, state_key: value}
+                    if container_key == "digital":
+                        return {"digital": {"outputs": [update_item]}}
+                    elif container_key is None:
+                        return {"outputs": [update_item]}
+                    else:
+                        # Fallback single-line shape
+                        return {"line_id": ident, "value": value}
+                # Decide target representations
+                high_val = "HIGH" if as_enum else (True if isinstance(current, bool) else 1)
+                low_val  = "LOW"  if as_enum else (False if isinstance(current, bool) else 0)
+                if c2.button("Set HIGH", key=f"io_high_{ident}"):
+                    body = _make_body(high_val)
+                    with sdk.connection():
+                        try:
+                            upd = _resolve_method(sdk, "io.control.update_io_state")
+                            m = upd
+                            coerced = _coerce_kwargs_to_models(m, {"body": body})
+                            res = _call_ok_unwrap(m, **coerced)
+                        except Exception as e:
+                            res = {"success": False, "raw": {"stage": "invoke", "error": str(e)}}
+                    if res.get("success"):
+                        st.success(f"{ident} → HIGH (200 OK)")
+                    else:
+                        st.error(f"Failed to set {ident} HIGH")
+                        st.code(json.dumps(_to_jsonable(res.get("raw")), indent=2))
+                if c3.button("Set LOW", key=f"io_low_{ident}"):
+                    body = _make_body(low_val)
+                    with sdk.connection():
+                        try:
+                            upd = _resolve_method(sdk, "io.control.update_io_state")
+                            m = upd
+                            coerced = _coerce_kwargs_to_models(m, {"body": body})
+                            res = _call_ok_unwrap(m, **coerced)
+                        except Exception as e:
+                            res = {"success": False, "raw": {"stage": "invoke", "error": str(e)}}
+                    if res.get("success"):
+                        st.success(f"{ident} → LOW (200 OK)")
+                    else:
+                        st.error(f"Failed to set {ident} LOW")
+                        st.code(json.dumps(_to_jsonable(res.get("raw")), indent=2))
 
 # Smoother auto-refresh: prefer st.autorefresh if available; otherwise fallback
 if auto_refresh:
