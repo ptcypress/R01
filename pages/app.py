@@ -229,8 +229,7 @@ PRESETS_PATH = "/mnt/data/sb_presets.json"
 with st.sidebar.expander("Manage presets", expanded=False):
     presets = st.session_state.get("presets", [])
     st.caption("Current presets:")
-    st.code("
-".join(presets) or "<empty>")
+    st.code("".join(presets) or "<empty>")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         if st.button("Save", key="save_presets"):
