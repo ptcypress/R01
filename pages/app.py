@@ -7,6 +7,7 @@ import inspect
 import dataclasses
 from enum import Enum
 from functools import reduce
+import os
 
 import streamlit as st
 
@@ -178,6 +179,53 @@ with st.sidebar:
                 methods = _discover_methods(sdk, max_depth=2)
         st.session_state["discovered_methods"] = methods
 
+# Presets management (save/load/clear/reset)
+DEFAULT_PRESETS = [
+    "movement.brakes.get_brakes_state",
+    "equipment.get_gripper_configuration",
+]
+if "presets" not in st.session_state:
+    st.session_state["presets"] = DEFAULT_PRESETS.copy()
+
+PRESETS_PATH = "/mnt/data/sb_presets.json"
+with st.sidebar.expander("Manage presets", expanded=False):
+    presets = st.session_state.get("presets", [])
+    st.caption("Current presets:")
+    st.code("
+".join(presets) or "<empty>")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        if st.button("Save", key="save_presets"):
+            try:
+                with open(PRESETS_PATH, "w") as f:
+                    json.dump(presets, f, indent=2)
+                st.success(f"Saved to {PRESETS_PATH}")
+            except Exception as e:
+                st.error(f"Save failed: {e}")
+    with c2:
+        if st.button("Load", key="load_presets"):
+            if os.path.exists(PRESETS_PATH):
+                try:
+                    with open(PRESETS_PATH, "r") as f:
+                        data = json.load(f)
+                    if isinstance(data, list):
+                        st.session_state["presets"] = data
+                        _safe_rerun()
+                    else:
+                        st.error("File did not contain a list of strings.")
+                except Exception as e:
+                    st.error(f"Load failed: {e}")
+            else:
+                st.warning("No saved file found yet.")
+    with c3:
+        if st.button("Clear", key="clear_presets"):
+            st.session_state["presets"] = []
+            _safe_rerun()
+    with c4:
+        if st.button("Reset", key="reset_presets"):
+            st.session_state["presets"] = DEFAULT_PRESETS.copy()
+            _safe_rerun()
+
 # =====================================================================================
 # Main UI
 # =====================================================================================
@@ -189,11 +237,8 @@ st.caption("Call SDK endpoints and unwrap with `.ok()` to show real values.")
 if "pending_endpoint" in st.session_state:
     st.session_state["endpoint_input"] = st.session_state.pop("pending_endpoint")
 
-# Minimal presets — add more only after you verify names in your SDK
-PRESETS = [
-    "movement.brakes.get_brakes_state",
-    "equipment.get_gripper_configuration",
-]
+# Minimal presets (dynamic). Modify via Manage presets sidebar or add from Discovered/Advanced.
+presets = st.session_state.get("presets", [])
 
 # -------------------- Simple Mode --------------------
 if simple_mode:
@@ -202,7 +247,17 @@ if simple_mode:
 
     chosen = None
     if src == "Presets":
-        chosen = st.selectbox("Preset methods", PRESETS, index=0, key="preset_pick")
+        if not presets:
+            st.info("No presets yet. Add one from Discovered or Advanced.")
+            chosen = None
+        else:
+            chosen = st.selectbox("Preset methods", presets, index=0, key="preset_pick")
+            if st.button("➖ Remove from presets", key="remove_preset_btn") and chosen:
+                try:
+                    st.session_state["presets"].remove(chosen)
+                except ValueError:
+                    pass
+                _safe_rerun()
     else:
         if not st.session_state.get("discovered_methods"):
             st.info("No discovered methods yet. Click 'Discover methods' in the sidebar.")
@@ -212,6 +267,13 @@ if simple_mode:
             chosen = st.selectbox("Discovered methods", options, index=0, key="disc_pick")
             sig = next((m["signature"] for m in disc if m["path"] == chosen), "(...)")
             st.code(f"{chosen}{sig}")
+            # Add to presets from discovered
+            if chosen and st.button("➕ Add to presets", key="add_from_discovered_btn"):
+                if chosen not in st.session_state["presets"]:
+                    st.session_state["presets"].append(chosen)
+                    _safe_rerun()
+                else:
+                    st.info("Already in presets.")
 
     # Build a tiny form for required kwargs (no JSON editing)
     call_kwargs = {}
@@ -278,13 +340,32 @@ else:
 
     st.markdown("#### Choose an SDK endpoint")
     colA, colB = st.columns([2, 1])
-    endpoint_pick = colA.selectbox("Method path (dot notation)", PRESETS, index=0)
+    opt_list = presets if presets else [""]
+    endpoint_pick = colA.selectbox("Method path (dot notation)", opt_list, index=0)
     endpoint = colA.text_input(
         "…or type a method path",
         value=st.session_state.get("endpoint_input", endpoint_pick),
         key="endpoint_input",
         help="Example: movement.brakes.get_brakes_state",
     )
+
+    # Add/remove current endpoint to/from presets
+    if endpoint.strip():
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("➕ Add to presets", key="add_from_adv"):
+                if endpoint not in st.session_state["presets"]:
+                    st.session_state["presets"].append(endpoint)
+                    _safe_rerun()
+                else:
+                    st.info("Already in presets.")
+        with b2:
+            if st.button("➖ Remove from presets", key="remove_from_adv"):
+                try:
+                    st.session_state["presets"].remove(endpoint)
+                    _safe_rerun()
+                except ValueError:
+                    st.info("Not in presets.")
 
     kwargs_text = colB.text_area(
         "Method kwargs (JSON)",
