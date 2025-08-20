@@ -201,6 +201,11 @@ endpoint = colA.text_input(
 
 kwargs_text = colB.text_area(
     "Method kwargs (JSON)",
+    value=st.session_state.get("kwargs_text", "{}"),
+    height=120,
+    help='e.g. {"axis":"x"} if the method takes parameters',
+    key="kwargs_text",
+)",
     value="{}",
     height=120,
     help='e.g. {"axis":"x"} if the method takes parameters',
