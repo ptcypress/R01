@@ -417,10 +417,14 @@ if simple_mode:
             st.error(str(e))
             chosen = None
 
+    # Auto-call repeats the request on every rerun (pair with sidebar Auto-refresh)
+    simple_auto_call = st.checkbox("Auto-call on each refresh", value=True, key="simple_auto_call")
+
     result_slot = st.empty()
     raw_slot = st.expander("Raw / Debug", expanded=False)
 
-    if chosen and st.button("Call method", type="primary"):
+    should_call = chosen and (st.session_state.get("simple_auto_call", False) or st.button("Call method", type="primary"))
+    if should_call:
         with sdk.connection():
             m = _resolve_method(sdk, chosen)
             coerced = _coerce_kwargs_to_models(m, call_kwargs)
