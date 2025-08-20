@@ -108,8 +108,26 @@ def _resolve_method(root, dotted: str):
 
 
 def _call_ok_unwrap(method, **kwargs):
-    """Invoke SDK method and unwrap via .ok(). On failure, return debug info."""
-    resp = method(**kwargs)
+    """Invoke SDK method and unwrap via .ok(). On failure, return debug info.
+    Handles two failure stages:
+      1) invocation errors before a Response exists (bad/missing kwargs)
+      2) non-200 responses when calling .ok()
+    """
+    try:
+        resp = method(**kwargs)
+    except Exception as e:
+        # Method invocation failed before a Response object was created
+        import traceback as _tb
+        return {
+            "success": False,
+            "data": None,
+            "status": None,
+            "raw": {
+                "stage": "invoke",
+                "error": str(e),
+                "trace": _tb.format_exc(),
+            },
+        }
     try:
         data = resp.ok()  # asserts 200 & returns unwrapped payload
         return {"success": True, "data": data, "status": 200, "raw": None}
@@ -119,6 +137,7 @@ def _call_ok_unwrap(method, **kwargs):
             "data": None,
             "status": getattr(resp, "status", None),
             "raw": {
+                "stage": "ok_unwrap",
                 "status": getattr(resp, "status", None),
                 "data": getattr(resp, "data", None),
                 "error": str(e),
@@ -127,6 +146,12 @@ def _call_ok_unwrap(method, **kwargs):
 
 
 def _safe_rerun():
+    if hasattr(st, "rerun"):
+        st.rerun()
+    elif hasattr(st, "experimental_rerun"):
+        st.experimental_rerun()
+
+):
     if hasattr(st, "rerun"):
         st.rerun()
     elif hasattr(st, "experimental_rerun"):
@@ -200,17 +225,7 @@ endpoint = colA.text_input(
 )
 
 kwargs_text = colB.text_area(
-    "Method kwargs (JSON)",
-    value=st.session_state.get("kwargs_text", "{}"),
-    height=120,
-    help='e.g. {"axis":"x"} if the method takes parameters',
-    key="kwargs_text",
-)",
-    value="{}",
-    height=120,
-    help='e.g. {"axis":"x"} if the method takes parameters',
-)
-try:
+    "Method kwargs (JSONtry:
     call_kwargs = json.loads(kwargs_text) if kwargs_text.strip() else {}
 except Exception as e:
     st.error(f"Invalid kwargs JSON: {e}")
