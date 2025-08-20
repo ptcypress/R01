@@ -8,3 +8,6 @@ scikit-learn
 seaborn
 standardbots
 json
+time
+inspect
+functools
