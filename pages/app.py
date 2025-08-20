@@ -87,6 +87,43 @@ sdk = StandardBotsRobot(
     robot_kind=robot_kind,
 )
 
+# --- Method discovery helpers (defined before use) ---
+def _sig_str(fn):
+    try:
+        return str(inspect.signature(fn))
+    except Exception:
+        return "(...)"
+
+def _discover_methods(root, max_depth: int = 2):
+    seen = set()
+    results = []
+    def walk(obj, path: str, depth: int):
+        if depth > max_depth:
+            return
+        try:
+            names = [n for n in dir(obj) if not n.startswith("_")]
+        except Exception:
+            return
+        for n in names:
+            try:
+                child = getattr(obj, n)
+            except Exception:
+                continue
+            full = f"{path}.{n}" if path else n
+            if callable(child):
+                results.append({"path": full, "signature": _sig_str(child)})
+                continue
+            if isinstance(child, (str, bytes, bytearray, int, float, bool, dict, list, tuple, Enum)):
+                continue
+            oid = id(child)
+            if oid in seen:
+                continue
+            seen.add(oid)
+            walk(child, full, depth + 1)
+    walk(root, "", 0)
+    results.sort(key=lambda r: r["path"]) 
+    return results
+
 # --- Method discovery UI ---
 with st.sidebar:
     if st.button("🔎 Discover methods (depth 2)"):
