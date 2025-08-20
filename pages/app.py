@@ -153,6 +153,13 @@ def run_once():
 run_once()
 
 # Gentle auto-refresh without an infinite loop (avoids locking the runner)
+# Streamlit >=1.29 uses st.rerun(); older versions used st.experimental_rerun().
+def _safe_rerun():
+    if hasattr(st, "rerun"):
+        st.rerun()
+    elif hasattr(st, "experimental_rerun"):
+        st.experimental_rerun()
+
 if auto_refresh:
     time.sleep(refresh_sec)
-    st.experimental_rerun()
+    _safe_rerun()
